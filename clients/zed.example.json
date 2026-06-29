@@ -1,0 +1,13 @@
+{
+  "_comment": "Zed Editor — merge into ~/.config/zed/settings.json",
+  "_path_windows": "%APPDATA%\\Zed\\settings.json",
+  "_path_macos": "~/.config/zed/settings.json",
+  "context_servers": {
+    "neuron": {
+      "command": {
+        "path": "cmd",
+        "args": ["/c", "%LOCALAPPDATA%\\Programs\\neuron\\scripts\\run_mcp.bat"]
+      }
+    }
+  }
+}

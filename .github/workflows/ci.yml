@@ -1,0 +1,28 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache fastembed ONNX model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fastembed
+          key: fastembed-all-MiniLM-L6-v2-v1
+
+      - name: Install dependencies
+        run: pip install -e .[dev]
+
+      - name: Check syntax
+        run: python -m compileall src/
+
+      - name: Run tests
+        run: python -m pytest tests/ -v

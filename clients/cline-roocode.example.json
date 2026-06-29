@@ -1,0 +1,12 @@
+{
+  "_comment": "Cline / Roocode (VS Code extensions) — configure via extension sidebar or mcp_config.json",
+  "_path": "~/.vscode/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_servers.json",
+  "mcpServers": {
+    "neuron": {
+      "command": "cmd",
+      "args": ["/c", "%LOCALAPPDATA%\\Programs\\neuron\\scripts\\run_mcp.bat"],
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}

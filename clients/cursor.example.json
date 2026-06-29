@@ -1,0 +1,11 @@
+{
+  "_comment": "Cursor — place as ~/.cursor/mcp.json (global) or .cursor/mcp.json (project)",
+  "_path_windows": "%USERPROFILE%\\.cursor\\mcp.json",
+  "_path_macos": "~/.cursor/mcp.json",
+  "mcpServers": {
+    "neuron": {
+      "command": "cmd",
+      "args": ["/c", "%LOCALAPPDATA%\\Programs\\neuron\\scripts\\run_mcp.bat"]
+    }
+  }
+}

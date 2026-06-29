@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+*.egg
+
+# DB / runtime data
+graphs/
+knowledge_grown/
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets
+*.env
+config.json
+~/.neuron/
+
+# Garbage
+.fuse_hidden*
+*.bak

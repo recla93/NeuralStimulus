@@ -1,0 +1,14 @@
+{
+  "_comment": "OpenCode — merge into ~/.config/opencode/opencode.json",
+  "_path_windows": "%USERPROFILE%\\.config\\opencode\\opencode.json",
+  "_path_macos": "~/.config/opencode/opencode.json",
+  "mcp": {
+    "neuron": {
+      "command": ["cmd", "/c", "%LOCALAPPDATA%\\Programs\\neuron\\scripts\\run_mcp.bat"],
+      "type": "local"
+    }
+  },
+  "instructions": [
+    "%LOCALAPPDATA%\\Programs\\neuron\\skills\\auto-context.md"
+  ]
+}
