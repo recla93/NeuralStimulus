@@ -5,7 +5,7 @@
     Installs Neuron as a real Python package into a dedicated venv.
 
     Strategy (Option B - hybrid):
-      1. Verify Python (3.10-3.13, the versions we ship pyturso wheels for).
+      1. Verify Python (3.10-3.14, the versions we ship pyturso wheels for).
       2. Create a venv under %LOCALAPPDATA%\Programs\neuron.
       3. pip install the Neuron wheel, using --find-links to point pip at the
          PRE-BUILT pyturso win_amd64 wheel shipped alongside this installer
@@ -85,7 +85,8 @@ if (-not $py) { Write-Host "ERROR: Python not found in PATH. Install Python 3.10
 $verOut = python -c "import sys; print(sys.version_info.major, sys.version_info.minor)"
 $parts  = $verOut.Trim().Split()
 $maj = [int]$parts[0]; $min = [int]$parts[1]
-Write-Host "   Detected Python $maj.$min : $(python -c 'import sys; print(sys.executable)')"
+$basePy = (python -c "import sys; print(sys.executable)").Trim()   # the interpreter we validated
+Write-Host "   Detected Python $maj.$min : $basePy"
 if ($maj -lt 3 -or ($maj -eq 3 -and $min -lt 10)) {
     Write-Host "ERROR: Python $maj.$min is too old (need >= 3.10)." -ForegroundColor Red; exit 1
 }
@@ -97,18 +98,41 @@ if (-not $inWheelMatrix) {
     Write-Host "         pyturso will be COMPILED (the toolchain fallback will run)." -ForegroundColor DarkYellow
 }
 
+# Preflight: report base tooling and detect uv (the pip-free fallback used below).
+function Test-Cmd($n){ [bool](Get-Command $n -ErrorAction SilentlyContinue) }
+$HasUv  = Test-Cmd uv
+$HasUvx = Test-Cmd uvx
+Write-Host "   Tooling: python $maj.$min | uv=$HasUv | uvx=$HasUvx"
+
 # ===============================================================
-# 2. VENV
+# 2. VENV  (pip by default; fall back to uv when the venv has no pip)
 # ===============================================================
 Write-Host "`n2. Virtual env..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
 $venv = "$DestDir\.venv"
 if (-not (Test-Path "$venv\Scripts\python.exe")) {
     Write-Host "   Creating virtual env..." -ForegroundColor Yellow
-    python -m venv $venv
+    python -m venv $venv 2>$null
 }
-$pip = "$venv\Scripts\pip.exe"
-& $pip install --upgrade pip --quiet 2>$null
+$venvPy = "$venv\Scripts\python.exe"
+$pip    = "$venv\Scripts\pip.exe"
+& $pip --version 2>$null; $pipOk = ($LASTEXITCODE -eq 0) -and (Test-Path $pip)
+$UseUv  = $false
+if (-not (Test-Path $venvPy) -or -not $pipOk) {
+    if ($HasUv) {
+        Write-Host "   pip missing/broken -> creating the venv with uv instead." -ForegroundColor DarkYellow
+        uv venv --python $basePy $venv   # pin to the interpreter validated in step 1 (matches vendored wheels)
+        $venvPy = "$venv\Scripts\python.exe"
+        $UseUv  = $true
+    } else {
+        Write-Host "ERROR: the venv has no working pip and 'uv' is not installed." -ForegroundColor Red
+        Write-Host "  Fix ONE of:" -ForegroundColor Red
+        Write-Host "    python -m ensurepip --upgrade                 # repair pip"
+        Write-Host "    irm https://astral.sh/uv/install.ps1 | iex    # install uv (no pip), then re-run"
+        exit 1
+    }
+}
+if ($pipOk) { & $pip install --upgrade pip --quiet 2>$null }
 
 # ===============================================================
 # 3. LOCATE THE NEURON WHEEL
@@ -129,18 +153,32 @@ if (Test-Path $Vendor) {
 # ===============================================================
 Write-Host "`n4. Installing Neuron + dependencies..." -ForegroundColor Yellow
 
-function Install-Neuron {
-    param([switch]$AllowVendor)
-    $args = @("install", "--timeout", "180", "--retries", "3")
-    if ($AllowVendor -and (Test-Path $Vendor)) { $args += @("--find-links", $Vendor) }
-    $args += $installTarget
-    return Invoke-Pip -Pip $pip -PipArgs $args -Name "Neuron"
+# Install via pip OR uv (when the venv has no working pip). Keeps the
+# prebuilt-pyturso --find-links path working under both. Retries 3x.
+function Invoke-Install {
+    param([string[]]$Target, [switch]$AllowVendor, [string]$Name = "Neuron")
+    if ($UseUv) {
+        $a = @("pip", "install", "--python", $venvPy)
+        if ($AllowVendor -and (Test-Path $Vendor)) { $a += @("--find-links", $Vendor) }
+        $a += $Target
+        for ($t = 1; $t -le 3; $t++) {
+            if ($t -gt 1) { Write-Host "   Attempt $t/3..." -ForegroundColor DarkYellow; Start-Sleep -Seconds 3 }
+            & uv @a
+            if ($LASTEXITCODE -eq 0) { Write-Host "   $Name OK" -ForegroundColor Green; return $true }
+        }
+        Write-Host "   $Name FAILED after 3 attempts (uv)" -ForegroundColor Red
+        return $false
+    }
+    $a = @("install", "--timeout", "180", "--retries", "3")
+    if ($AllowVendor -and (Test-Path $Vendor)) { $a += @("--find-links", $Vendor) }
+    $a += $Target
+    return (Invoke-Pip -Pip $pip -PipArgs $a -Name $Name)
 }
 
 $installed = $false
 if (-not $ForceCompile) {
     Write-Host "   [a] Prebuilt path (no compiler needed)..." -ForegroundColor Yellow
-    $installed = Install-Neuron -AllowVendor
+    $installed = Invoke-Install -Target @($installTarget) -AllowVendor
 }
 
 if (-not $installed) {
@@ -188,7 +226,7 @@ if (-not $installed) {
     }
 
     Write-Host "   [b] Compile path (pyturso from source)..." -ForegroundColor Yellow
-    $installed = Install-Neuron   # no vendor: let pip build pyturso
+    $installed = Invoke-Install -Target @($installTarget)   # no vendor: build pyturso from source
 }
 
 if (-not $installed) {
@@ -210,7 +248,7 @@ if (-not $skipLlmProviders) {
         foreach ($idx in ($c -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })) {
             $n = [int]$idx - 1
             if ($n -ge 0 -and $n -lt $pkgs.Count) {
-                Invoke-Pip -Pip $pip -PipArgs @("install","--timeout","60","--retries","3",$pkgs[$n]) -Name $pkgs[$n] | Out-Null
+                Invoke-Install -Target @($pkgs[$n]) -Name $pkgs[$n] | Out-Null
             }
         }
     }

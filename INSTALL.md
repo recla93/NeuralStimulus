@@ -11,6 +11,20 @@ the launch command with your MCP client.
 
 ---
 
+## Prerequisites
+
+- **Python 3.10–3.14** on your `PATH` (`python --version`).
+- **Either a working `pip`** (the default), **or [`uv`](https://astral.sh/uv)**. The
+  Windows installer falls back to `uv` when the base Python's `python -m venv` produces
+  a venv without a usable pip — `uv` creates the venv and installs with no pip at all.
+  Install it (pip-free) with the one-liner:
+
+  ```powershell
+  irm https://astral.sh/uv/install.ps1 | iex
+  ```
+
+---
+
 ## 1. Automated install (Windows)
 
 **One-click (no terminal):** double-click one of these `.bat` files in the
@@ -24,7 +38,7 @@ end so you can read the output:
   pyturso wheel, builds the Neuron wheel, then runs the installer. Use this from
   a **source checkout** when nothing is built yet. (Builds pyturso for *your*
   Python only — it's a dev convenience, not a release builder; the full
-  3.10–3.13 wheel set comes from `release.yml`.)
+  3.10–3.14 wheel set comes from `release.yml`.)
 
 Or run the installer directly from a terminal (equivalent to `install.bat`):
 
@@ -34,7 +48,7 @@ Or run the installer directly from a terminal (equivalent to `install.bat`):
 
 What it does, in order:
 
-1. Verifies Python is 3.10–3.13.
+1. Verifies Python is 3.10–3.14.
 2. Creates a venv at `%LOCALAPPDATA%\Programs\neuron\.venv`.
 3. `pip install`s the Neuron wheel, pointing pip at the **pre-built `pyturso`
    wheel** in `.\vendor` via `--find-links` — so **no C/Rust compiler is needed**.
@@ -87,7 +101,7 @@ This drops `pyturso-0.6.1-cp<XY>-cp<XY>-win_amd64.whl` into `vendor\`, where
 
 > **One wheel = one Python version.** A `cp313` wheel only installs on Python
 > 3.13; a 3.12 user needs `cp312`, etc. For a real release you need the full set
-> (3.10–3.13). You don't build those by hand — the `release.yml` GitHub workflow
+> (3.10–3.14). You don't build those by hand — the `release.yml` GitHub workflow
 > compiles all four on `windows-latest` runners (which already have the
 > toolchain) and attaches them to the Release automatically. The single local
 > build above is mainly for **testing the no-compile install path** on your own
@@ -191,7 +205,7 @@ You're on Windows without a matching prebuilt wheel. Either:
   Open a **new** terminal afterwards so `cargo`/`cl` are on `PATH`, then retry.
 
 ### `pyturso` wheel doesn't match my Python
-The vendored wheels cover Python 3.10–3.13 (`win_amd64`). On a different Python
+The vendored wheels cover Python 3.10–3.14 (`win_amd64`). On a different Python
 minor version or architecture (e.g. ARM64), there's no matching wheel and pip
 falls back to compiling. Install a supported CPython, or build the toolchain.
 

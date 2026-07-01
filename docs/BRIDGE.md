@@ -1,75 +1,79 @@
-# Bridge guide — expose Neuron over HTTP (for ChatGPT & other remote-only clients)
+# Bridge guide — use Neuron from ChatGPT (HTTP)
 
-Neuron is a **local stdio** MCP server. Most clients (Claude Desktop/Code, Cursor, OpenCode,
-VS Code, …) launch it directly as a subprocess. But some clients — notably **ChatGPT**
-(Developer Mode connectors / Apps SDK) — only talk to a **remote HTTPS MCP endpoint** and
-cannot launch a local process. For those, you put a small **stdio → HTTP bridge** in front of
-Neuron and give the client the bridge's public URL.
+Most MCP clients (Claude Desktop/Code, Cursor, OpenCode, …) launch Neuron directly as a local
+stdio subprocess. **ChatGPT** can't do that — it only talks to a **remote HTTPS** MCP endpoint.
+So you put a tiny **stdio → HTTP bridge** in front of Neuron and give ChatGPT the bridge's URL.
 
-> **Transport vs storage are independent.** The bridge only changes *how the client reaches
-> Neuron*. The wrapped `python -m neuron` still resolves its storage exactly as usual — local
-> file, or the shared Turso Cloud DB if the environment provides the credentials (see the
-> [Team guide](TEAM.md)). You can mix freely: solo on stdio+local, team on stdio+Turso, a
-> ChatGPT user on HTTP+Turso.
+> Transport and storage are independent: the bridge only changes *how the client reaches
+> Neuron*. The wrapped Neuron still uses your normal storage — local file, or the shared Turso
+> Cloud DB if your `.env` provides the credentials (see the [Team guide](TEAM.md)).
 
-## The shape of it
+## The easy way — one command
 
-```
-ChatGPT  ──HTTPS──▶  public tunnel  ──HTTP──▶  mcp-proxy  ──stdio──▶  python -m neuron
-```
-
-Two pieces you add around Neuron:
-
-1. **A bridge that runs a stdio server and serves it over HTTP/SSE.** The right tool is
-   [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) in **server mode**.
-   > Do **not** use `mcp-remote`: it goes the *other* direction (it lets a stdio *client* reach
-   > a remote HTTP server), which is the opposite of what we need here.
-2. **A public HTTPS URL.** ChatGPT connectors are remote and can't reach `localhost`, so the
-   bridge's local port has to be exposed over HTTPS (a tunnel, or a hosted box).
-
-## Steps
+Run the helper **with the Python where Neuron is installed** (its venv). It finds/launches
+`mcp-proxy` for you (via `uvx`, no manual install), checks Neuron actually starts, and prints
+the next step:
 
 ```bash
-# 1. Wrap Neuron's stdio server and serve it over HTTP/SSE on localhost.
-#    (flag names vary by mcp-proxy version — check its README)
-uvx mcp-proxy --port 8000 -- python3 -m neuron
-#    → local endpoint, e.g.  http://127.0.0.1:8000/sse
-
-# 2. Expose that port over PUBLIC HTTPS. A quick throwaway tunnel:
-cloudflared tunnel --url http://127.0.0.1:8000
-#    → gives a  https://<random>.trycloudflare.com  URL
-#    (ngrok, a reverse proxy, or a hosted box work too)
-
-# 3. In ChatGPT → Settings → Connectors (Developer Mode) → add the public HTTPS URL,
-#    appending the SSE path, e.g.  https://<random>.trycloudflare.com/sse
+python scripts/bridge.py            # → serves http://127.0.0.1:8000/sse
+# options:  --port 9000   --print-cmd (dry run)   -- <your own neuron launch command>
 ```
 
-Run the bridge from inside Neuron's venv (so `mcp`, `fastembed`, `pyturso` resolve), and in the
-same environment where your `.env` / Turso credentials live if you want the ChatGPT session to
-share the team memory.
+If you don't have `uv` yet (the script will tell you), install it — **no pip required**:
+
+```
+Windows      : irm https://astral.sh/uv/install.ps1 | iex
+macOS / Linux: curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then expose the local port over **public HTTPS** (ChatGPT connectors can't reach `localhost`):
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000     # → https://<random>.trycloudflare.com
+```
+
+Finally, in **ChatGPT → Settings → Connectors (Developer Mode)** add the public URL with the
+SSE path, e.g. `https://<random>.trycloudflare.com/sse`.
+
+That's it: `python scripts/bridge.py` + a tunnel + paste the URL.
+
+## What it runs under the hood
+
+`scripts/bridge.py` is just a wrapper around
+[`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) in server mode. The equivalent manual
+command (see it with `--print-cmd`) is:
+
+```bash
+uvx mcp-proxy --port=8000 --host=127.0.0.1 -- <python-that-has-neuron> -m neuron
+```
+
+> **Don't use `mcp-remote`** — it goes the opposite direction (adapts a stdio *client* to a
+> remote server), which is not what we need.
+
+## Troubleshooting
+
+- **`McpError: Connection closed` / "unhandled errors in a TaskGroup"** — the Neuron child
+  process died on startup. Almost always it was launched with the **wrong Python** (a bare
+  `python3 -m neuron` hitting a Python where Neuron isn't installed). Fixes:
+  - run `python scripts/bridge.py` **with Neuron's venv Python** (it then launches that same
+    interpreter — the reliable default), or
+  - pass your real launch command explicitly, e.g. on a Windows install:
+    `python scripts/bridge.py -- cmd /c %LOCALAPPDATA%\Programs\neuron\scripts\run_mcp.bat`
+  - sanity-check first: `python -m neuron` should start and **wait** (not exit). If it exits,
+    that error is your real problem — fix the install before bridging.
+- **ChatGPT can't connect** — make sure you used the **public HTTPS** tunnel URL (not
+  `localhost`) and included the `/sse` path, and that the tunnel is still running.
 
 ## Security
 
-The tunnel exposes a network endpoint, and **Neuron ships with no auth layer**. Treat the URL
-as a secret:
+The tunnel exposes a network endpoint and **Neuron has no auth layer** — anyone with the URL
+can read/write your memory (on a shared Turso DB, the whole team's). Keep the tunnel
+private and short-lived, tear it down when unused, and put access control (e.g. Cloudflare
+Access) in front of anything long-lived.
 
-- Keep the tunnel **private and short-lived**; tear it down when you're not using it.
-- For anything beyond a quick test, put access control in front of it (e.g. Cloudflare Access),
-  or host it on a box you control with proper auth/TLS.
-- Anyone with the URL can read and write your Neuron memory — on a **shared Turso** DB that
-  means the whole team's knowledge.
+## Requirements & future
 
-## Requirements & notes
-
-- ChatGPT MCP connectors require **Developer Mode** (beta) and are limited to the paid web
-  plans (Plus / Pro / Business / Enterprise / Education). This may change — check ChatGPT's
-  current connector docs.
-- Perplexity's *local* MCP is macOS-only (a different mechanism); its remote connectors are a
-  paid feature. See [DEVELOPER.md](DEVELOPER.md#mcp-client-configuration).
-
-## Future: native HTTP transport
-
-A first-class HTTP transport (Neuron serving MCP **Streamable HTTP** directly, no bridge) is a
-planned option — tracked as **T15** in `TASKLIST.md`. It would remove the `mcp-proxy` hop, but
-you'd still need a public HTTPS endpoint for ChatGPT, so the bridge above is the simplest path
-today. The native transport is best added and validated with hands-on access to the runtime.
+ChatGPT MCP connectors need **Developer Mode** (beta) and a paid web plan — check ChatGPT's
+current docs. A first-class **native HTTP transport** (Neuron serving Streamable HTTP directly,
+no bridge) is a planned option (**T15** in `TASKLIST.md`); it would remove the proxy hop but
+still needs a public HTTPS endpoint for ChatGPT, so the bridge above is the simplest path today.

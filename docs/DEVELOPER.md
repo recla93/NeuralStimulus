@@ -618,7 +618,7 @@ Two workflows:
   runs `pytest tests/ -v`) and a `build` job on `ubuntu-latest` that runs
   `python -m build` and verifies the resulting wheel imports `neuron`.
 - **`.github/workflows/release.yml`** (on tag `v*`): builds the Windows
-  `pyturso` wheels (matrix 3.10–3.13), builds the Neuron wheel + sdist, and
+  `pyturso` wheels (matrix 3.10–3.14), builds the Neuron wheel + sdist, and
   publishes a GitHub Release with all assets attached. See
   [INSTALL.md](../INSTALL.md) for how those assets are consumed.
 

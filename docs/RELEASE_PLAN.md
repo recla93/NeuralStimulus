@@ -216,7 +216,7 @@ Modello scelto: **Opzione B (hybrid)**. L'installer NON installa più tutto VS, 
 prima la via senza compilatore.
 
 **Ordine (dependency-first):**
-1. **Python ≥ 3.10** e nella matrice supportata (3.10–3.13). Se fuori range → messaggio
+1. **Python ≥ 3.10** e nella matrice supportata (3.10–3.14). Se fuori range → messaggio
    chiaro (fuori dai wheel vendorizzati).
 2. **venv**.
 3. **`pip install --find-links <vendor> neuron-*.whl`** — `<vendor>` è la cartella con le
@@ -265,7 +265,7 @@ Sintesi del percorso scelto, in ordine di priorità ("prima le dipendenze"):
 
 ## Verifica finale (prima di taggare)
 - Job `build-pyturso-win` produce `pyturso-0.6.1-cp3XX-cp3XX-win_amd64.whl` per ogni
-  Python 3.10–3.13.
+  Python 3.10–3.14.
 - `python -m build` produce `dist/neuron-3.3.0-py3-none-any.whl` **contenente**
   `neuron/data/base_knowledge.db`.
 - Su Windows pulito (senza Rust/MSVC): `pip install --find-links <vendor> neuron-*.whl`
