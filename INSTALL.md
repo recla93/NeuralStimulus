@@ -205,9 +205,11 @@ You're on Windows without a matching prebuilt wheel. Either:
   Open a **new** terminal afterwards so `cargo`/`cl` are on `PATH`, then retry.
 
 ### `pyturso` wheel doesn't match my Python
-The vendored wheels cover Python 3.10–3.14 (`win_amd64`). On a different Python
-minor version or architecture (e.g. ARM64), there's no matching wheel and pip
-falls back to compiling. Install a supported CPython, or build the toolchain.
+A tagged release bundles prebuilt `vendor/` wheels for the full Python 3.10–3.14
+range (`win_amd64`); a source checkout vendors only the maintainers' versions
+(currently `cp313`/`cp314`). On any Python minor version without a matching wheel
+— or a different architecture (e.g. ARM64) — pip falls back to compiling. Install
+a supported CPython, or build the toolchain.
 
 ### `ModuleNotFoundError: No module named 'fastembed'` (or `mcp`)
 The venv install didn't complete. Re-run inside the activated venv:
