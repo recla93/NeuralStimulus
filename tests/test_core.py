@@ -281,6 +281,421 @@ class TestGraphPersistence:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Graph — incremental save (T12)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestIncrementalSave:
+    """save_sqlite must upsert/delete only the delta and never wipe the store."""
+
+    def _rows(self, db, sql):
+        import sqlite3
+        c = sqlite3.connect(db)
+        try:
+            return c.execute(sql).fetchall()
+        finally:
+            c.close()
+
+    def _seed(self):
+        g = Graph()
+        g.turn_count = 3
+        g.add_node(Node(keyword="spring", turn=1, topic="java", domain="backend",
+                        sentiment="neutral", salience=3))
+        g.add_node(Node(keyword="jpa", turn=1, topic="java", domain="backend",
+                        sentiment="neutral", salience=1))
+        g.add_link(Link(source="spring", target="jpa", link_type="deepening",
+                        weight="strong", rationale="orm", created_turn=1, last_active_turn=1))
+        return g
+
+    def test_first_save_full_then_incremental(self):
+        g = self._seed()
+        assert g._needs_full_write is True, "fresh graph writes all rows on first save"
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            g.save_sqlite(db)
+            assert g._needs_full_write is False and g._dirty is False
+            # unique link index created (enables ON CONFLICT upserts)
+            idx = self._rows(db, "SELECT name FROM sqlite_master "
+                                 "WHERE type='index' AND name='idx_links_ctx'")
+            assert len(idx) == 1
+
+            # in-place mutation (as server.py does) + explicit dirty mark
+            nd = g.get_node("spring"); nd.salience += 5
+            g.mark_node_dirty("spring")
+            assert g._needs_full_write is False, "second save is an incremental delta"
+            jpa_id = self._rows(db, "SELECT id FROM nodes WHERE keyword='jpa'")[0][0]
+            g.save_sqlite(db)
+
+            g2 = Graph(); g2.load_sqlite(db)
+            assert g2.get_node("spring").salience == 8
+            assert g2.get_node("jpa").salience == 1
+            # ON CONFLICT DO UPDATE preserves row id (not INSERT OR REPLACE)
+            assert self._rows(db, "SELECT id FROM nodes WHERE keyword='jpa'")[0][0] == jpa_id
+        finally:
+            os.unlink(db)
+
+    def test_incremental_save_preserves_foreign_rows(self):
+        """A concurrent writer's row must survive our incremental save
+        (no global DELETE) — the core requirement for a shared store (T11)."""
+        g = self._seed()
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            g.save_sqlite(db)   # full
+            import sqlite3
+            c = sqlite3.connect(db)
+            c.execute("INSERT INTO nodes (keyword,turn,topic,domain,sentiment,salience,"
+                      "entities,tags,refs) VALUES ('external',9,'t','o','neutral',7,"
+                      "'[]','[]','[]')")
+            c.commit(); c.close()
+            # our next incremental save adds a node; must not touch 'external'
+            g.add_node(Node(keyword="hibernate", turn=4, topic="java",
+                            domain="backend", sentiment="neutral"))
+            g.save_sqlite(db)
+            kws = {r[0] for r in self._rows(db, "SELECT keyword FROM nodes")}
+            assert "external" in kws, "foreign row wiped by incremental save"
+            assert "hibernate" in kws
+        finally:
+            os.unlink(db)
+
+    def test_prune_removes_only_expired_link(self):
+        g = Graph()
+        g.add_node(Node(keyword="a", turn=1, topic="t", domain="d", sentiment="neutral"))
+        g.add_node(Node(keyword="b", turn=1, topic="t", domain="d", sentiment="neutral"))
+        g.add_link(Link(source="a", target="b", link_type="deepening", weight="strong",
+                        rationale="", created_turn=1, last_active_turn=1))
+        g.add_link(Link(source="a", target="b", link_type="analogy", weight="tangential",
+                        rationale="", created_turn=1, last_active_turn=1, inactive_turns=99))
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            g.save_sqlite(db)
+            assert len(self._rows(db, "SELECT * FROM links")) == 2
+            assert g.prune_tangential() == 1
+            g.save_sqlite(db)   # incremental: only the expired link deleted
+            remaining = self._rows(db, "SELECT weight FROM links")
+            assert len(remaining) == 1 and remaining[0][0] == "strong"
+        finally:
+            os.unlink(db)
+
+    def test_full_reconcile_deletes_stale_rows(self):
+        """mark_full_rewrite() (used by merge) drops rows gone from memory."""
+        g = Graph()
+        g.add_node(Node(keyword="orm", turn=1, topic="t", domain="d",
+                        sentiment="neutral", salience=2))
+        g.add_node(Node(keyword="alias", turn=1, topic="t", domain="d",
+                        sentiment="neutral", salience=3))
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            g.save_sqlite(db)
+            assert "alias" in {r[0] for r in self._rows(db, "SELECT keyword FROM nodes")}
+            g.nodes = [nd for nd in g.nodes if nd.keyword != "alias"]
+            g._rebuild_node_map()
+            g.mark_full_rewrite()
+            g.save_sqlite(db)
+            kws = {r[0] for r in self._rows(db, "SELECT keyword FROM nodes")}
+            assert "alias" not in kws and "orm" in kws
+            vecs = {r[0] for r in self._rows(db, "SELECT keyword FROM node_vectors")}
+            assert "alias" not in vecs, "orphan vector left behind"
+        finally:
+            os.unlink(db)
+
+    def test_legacy_duplicate_links_deduped(self):
+        """A pre-existing DB with duplicate (source,target,link_type) rows must
+        be deduped before the UNIQUE index is created, without erroring."""
+        import sqlite3
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            c = sqlite3.connect(db)
+            c.executescript(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+                "INSERT INTO meta VALUES ('turn_count','1');"
+                "CREATE TABLE nodes (id INTEGER PRIMARY KEY AUTOINCREMENT, keyword TEXT,"
+                " turn INTEGER, topic TEXT, domain TEXT, sentiment TEXT, salience INTEGER,"
+                " entities TEXT DEFAULT '[]', tags TEXT DEFAULT '[]', refs TEXT DEFAULT '[]');"
+                "INSERT INTO nodes (keyword,turn,topic,domain,sentiment,salience) VALUES"
+                " ('a',1,'t','d','neutral',0),('b',1,'t','d','neutral',0);"
+                "CREATE TABLE links (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT,"
+                " target TEXT, link_type TEXT, weight TEXT, rationale TEXT, created_turn"
+                " INTEGER, last_active_turn INTEGER, inactive_turns INTEGER);"
+                "INSERT INTO links (source,target,link_type,weight,rationale,created_turn,"
+                "last_active_turn,inactive_turns) VALUES"
+                " ('a','b','deepening','medium','',1,1,0),('a','b','deepening','strong','',1,1,0);"
+            )
+            c.commit(); c.close()
+            g = Graph(); g.load_sqlite(db)
+            g.add_node(Node(keyword="c", turn=2, topic="t", domain="d", sentiment="neutral"))
+            g.save_sqlite(db)   # must dedupe + create unique index, no IntegrityError
+            dup = self._rows(db, "SELECT source,target,link_type,COUNT(*) FROM links "
+                                 "GROUP BY 1,2,3 HAVING COUNT(*)>1")
+            assert dup == []
+            idx = self._rows(db, "SELECT name FROM sqlite_master "
+                                 "WHERE type='index' AND name='idx_links_ctx'")
+            assert len(idx) == 1
+        finally:
+            os.unlink(db)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Graph — context column (T11 Fase 2a): multi-context on one shared store
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestContextColumn:
+    """One physical store holding several contexts (simulates the shared Turso
+    Cloud tables): every read/write must stay scoped to its own context."""
+
+    def _rows(self, db, sql, params=()):
+        import sqlite3
+        c = sqlite3.connect(db)
+        try:
+            return c.execute(sql, params).fetchall()
+        finally:
+            c.close()
+
+    def _g(self, kw_sal, links=None):
+        g = Graph(); g.turn_count = 1
+        for kw, sal in kw_sal:
+            g.add_node(Node(keyword=kw, turn=1, topic="t", domain="d",
+                            sentiment="neutral", salience=sal))
+        for s, t in (links or []):
+            g.add_link(Link(source=s, target=t, link_type="deepening",
+                            weight="strong", rationale="", created_turn=1, last_active_turn=1))
+        return g
+
+    def test_two_contexts_coexist_and_are_isolated(self):
+        gfe = self._g([("react", 3), ("shared", 1)], [("react", "shared")])
+        gbe = self._g([("spring", 2), ("shared", 5)], [("spring", "shared")])
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            gfe.save_sqlite(db, context="team/fe")
+            gbe.save_sqlite(db, context="team/be")
+            # 'shared' is a distinct row per context, each with its own salience
+            shared = dict(self._rows(db, "SELECT context, salience FROM nodes WHERE keyword='shared'"))
+            assert shared == {"team/fe": 1, "team/be": 5}
+
+            # load is context-scoped
+            g2 = Graph(); g2.load_sqlite(db, context="team/be")
+            assert {n.keyword for n in g2.nodes} == {"spring", "shared"}
+            assert g2.get_node("shared").salience == 5
+
+            # full reconcile of FE must not touch BE's rows
+            gfe.nodes = [n for n in gfe.nodes if n.keyword != "shared"]
+            gfe._rebuild_node_map(); gfe.mark_full_rewrite()
+            gfe.save_sqlite(db, context="team/fe")
+            be = {r[0] for r in self._rows(db, "SELECT keyword FROM nodes WHERE context='team/be'")}
+            assert be == {"spring", "shared"}, "BE wiped by FE reconcile"
+
+            # incremental save of BE must not touch FE
+            gbe.get_node("spring").salience += 10; gbe.mark_node_dirty("spring")
+            gbe.save_sqlite(db, context="team/be")
+            fe = {r[0] for r in self._rows(db, "SELECT keyword FROM nodes WHERE context='team/fe'")}
+            assert fe == {"react"}
+        finally:
+            os.unlink(db)
+
+    def test_legacy_migration_stamps_file_context(self):
+        """A pre-context per-file store must migrate with ALL its rows stamped
+        with the file's context (not the ALTER default 'default')."""
+        import sqlite3
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            c = sqlite3.connect(db)
+            c.executescript(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+                "INSERT INTO meta VALUES ('turn_count','3');"
+                "CREATE TABLE nodes (id INTEGER PRIMARY KEY AUTOINCREMENT, keyword TEXT,"
+                " turn INTEGER, topic TEXT, domain TEXT, sentiment TEXT, salience INTEGER,"
+                " entities TEXT DEFAULT '[]', tags TEXT DEFAULT '[]', refs TEXT DEFAULT '[]');"
+                "CREATE UNIQUE INDEX idx_nodes_keyword ON nodes(keyword);"
+                "INSERT INTO nodes (keyword,turn,topic,domain,sentiment,salience)"
+                " VALUES ('spring',1,'t','d','neutral',9);"
+                "CREATE TABLE node_vectors (keyword TEXT PRIMARY KEY, embedding BLOB NOT NULL,"
+                " dim INTEGER NOT NULL);"
+                "INSERT INTO node_vectors VALUES ('spring', X'00000000', 384);"
+                "CREATE TABLE links (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT,"
+                " target TEXT, link_type TEXT, weight TEXT, rationale TEXT, created_turn"
+                " INTEGER, last_active_turn INTEGER, inactive_turns INTEGER);"
+            )
+            c.commit(); c.close()
+            ctx = "java/spring"
+            g = Graph(); g.load_sqlite(db, context=ctx)
+            assert g.get_node("spring") is not None
+            g.get_node("spring").salience += 1; g.mark_node_dirty("spring")
+            g.save_sqlite(db, context=ctx)
+            # every table's rows carry the file's context, never 'default'
+            for tbl in ("nodes", "node_vectors"):
+                ctxs = [r[0] for r in self._rows(db, f"SELECT DISTINCT context FROM {tbl}")]
+                assert ctxs == [ctx], f"{tbl} contexts={ctxs}"
+            # reload under that context still finds the data
+            g2 = Graph(); g2.load_sqlite(db, context=ctx)
+            assert g2.get_node("spring").salience == 10
+            # composite indexes present, old single-column index gone
+            idx = {r[0] for r in self._rows(db, "SELECT name FROM sqlite_master WHERE type='index'")}
+            assert {"idx_nodes_ctx_kw", "idx_links_ctx"} <= idx
+            assert "idx_nodes_keyword" not in idx
+        finally:
+            os.unlink(db)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Concurrency-safe saves (T11 Fase 2b): atomic salience + monotonic weight
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConcurrentSaves:
+    def _rows(self, db, sql, p=()):
+        import sqlite3
+        c = sqlite3.connect(db)
+        try:
+            return c.execute(sql, p).fetchall()
+        finally:
+            c.close()
+
+    def test_concurrent_salience_no_lost_update(self):
+        """Two writers loading the same node and each incrementing it must both
+        count — the relative-delta upsert prevents a last-write-wins clobber."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            seed = Graph(); seed.turn_count = 1
+            seed.add_node(Node(keyword="spring", turn=1, topic="t", domain="d",
+                               sentiment="neutral", salience=5))
+            seed.save_sqlite(db, context="team")
+
+            a = Graph(); a.load_sqlite(db, context="team")   # baseline 5
+            b = Graph(); b.load_sqlite(db, context="team")   # baseline 5
+            a.get_node("spring").salience += 2; a.mark_node_dirty("spring")
+            a.save_sqlite(db, context="team")
+            b.get_node("spring").salience += 3; b.mark_node_dirty("spring")
+            b.save_sqlite(db, context="team")
+
+            val = self._rows(db, "SELECT salience FROM nodes WHERE context='team' "
+                                 "AND keyword='spring'")[0][0]
+            assert val == 10, f"expected 5+2+3=10, got {val} (absolute write would give 8)"
+        finally:
+            os.unlink(db)
+
+    def test_solo_relative_salience_roundtrips(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            g = Graph(); g.turn_count = 1
+            g.add_node(Node(keyword="a", turn=1, topic="t", domain="d",
+                            sentiment="neutral", salience=5))
+            g.save_sqlite(db)
+            for inc in (2, 3):
+                g.get_node("a").salience += inc; g.mark_node_dirty("a"); g.save_sqlite(db)
+            r = Graph(); r.load_sqlite(db)
+            assert r.get_node("a").salience == 10
+        finally:
+            os.unlink(db)
+
+    def test_weight_promotion_monotonic(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            s = Graph(); s.turn_count = 1
+            s.add_node(Node(keyword="x", turn=1, topic="t", domain="d", sentiment="neutral"))
+            s.add_node(Node(keyword="y", turn=1, topic="t", domain="d", sentiment="neutral"))
+            s.add_link(Link(source="x", target="y", link_type="deepening",
+                            weight="tangential", rationale="", created_turn=1, last_active_turn=1))
+            s.save_sqlite(db, context="team")
+
+            a = Graph(); a.load_sqlite(db, context="team")
+            b = Graph(); b.load_sqlite(db, context="team")   # stale: still tangential
+            a.links[0].weight = "medium"; a.mark_link_dirty(a.links[0])
+            a.save_sqlite(db, context="team")
+            # stale writer re-writes tangential — must not downgrade
+            b.mark_link_dirty(b.links[0]); b.save_sqlite(db, context="team")
+            w = self._rows(db, "SELECT weight FROM links WHERE context='team'")[0][0]
+            assert w == "medium", f"stale write downgraded to {w}"
+        finally:
+            os.unlink(db)
+
+    def test_atomic_salience_clamps_at_zero(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db = f.name
+        try:
+            g = Graph(); g.turn_count = 1
+            g.add_node(Node(keyword="k", turn=1, topic="t", domain="d",
+                            sentiment="neutral", salience=1))
+            g.save_sqlite(db, context="team")
+            g2 = Graph(); g2.load_sqlite(db, context="team")
+            g2._salience_baseline["k"] = 6           # force a large negative delta
+            g2.mark_node_dirty("k"); g2.save_sqlite(db, context="team")
+            assert self._rows(db, "SELECT salience FROM nodes WHERE keyword='k'")[0][0] == 0
+        finally:
+            os.unlink(db)
+
+    def test_warm_start_writes_all_rows_additively(self):
+        """A graph warm-started from one store (the seed) then saved to a
+        different, empty target must write ALL its rows there — additively, with
+        no diff-delete."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            seed = f.name
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            target = f.name
+        try:
+            s = Graph(); s.turn_count = 2
+            s.add_node(Node(keyword="k1", turn=1, topic="t", domain="d",
+                            sentiment="neutral", salience=2))
+            s.add_node(Node(keyword="k2", turn=1, topic="t", domain="d",
+                            sentiment="neutral", salience=5))
+            s.save_sqlite(seed, context="default")
+
+            g = Graph(); g.load_sqlite(seed, context="default", warm_start=True)
+            assert g._needs_full_write is True and g._needs_diff_delete is False
+            g.add_node(Node(keyword="k3", turn=3, topic="t", domain="d", sentiment="neutral"))
+            g.save_sqlite(target, context="default")
+            kws = {r[0] for r in self._rows(target, "SELECT keyword FROM nodes "
+                                                    "WHERE context='default'")}
+            assert kws == {"k1", "k2", "k3"}, kws
+            assert self._rows(target, "SELECT salience FROM nodes WHERE keyword='k2'")[0][0] == 5
+        finally:
+            os.unlink(seed); os.unlink(target)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# .env auto-loader (T16)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestDotenvLoader:
+    def test_no_autoload_under_pytest(self):
+        """SAFETY: the loader must be a no-op while tests run, so a developer's
+        real .env (with live cloud creds) can never switch the suite to remote."""
+        from neuron import _env
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write("NEURON_T16_SENTINEL=should_not_load\n")
+            path = f.name
+        try:
+            _env._loaded = False  # allow a fresh attempt
+            loaded = _env.load_dotenv_once(path)
+            assert loaded is False, "loader ran under pytest"
+            assert "NEURON_T16_SENTINEL" not in os.environ
+        finally:
+            os.unlink(path)
+            os.environ.pop("NEURON_T16_SENTINEL", None)
+
+    def test_unquote_and_find(self):
+        from neuron import _env
+        assert _env._unquote('"x"') == "x"
+        assert _env._unquote("'y'") == "y"
+        assert _env._unquote("  z  ") == "z"
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write("K=V\n")
+            path = f.name
+        try:
+            os.environ["NEURON_ENV_FILE"] = path
+            assert _env._find_env_file() == path
+        finally:
+            os.environ.pop("NEURON_ENV_FILE", None)
+            os.unlink(path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Vector helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 

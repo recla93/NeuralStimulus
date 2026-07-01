@@ -76,8 +76,9 @@ def main() -> int:
 
     if remote_requested and have_libsql:
         print("\nCloud is configured AND its dependency is present. To actually verify")
-        print("connectivity against the real Turso DB (out of scope for this check),")
-        print("run a one-off query in a dev shell — see DEVELOPER.md > Enabling Turso Cloud.")
+        print("connectivity against the real Turso DB (this offline check never connects),")
+        print("run the online onboarding tool, which does a real read+write probe:")
+        print("    python scripts/connect_turso.py --check-only")
 
     # Only a hard "half-configured cloud" state is a failure: it breaks startup.
     return 1 if (remote_requested and not have_libsql) or remote_partial else 0

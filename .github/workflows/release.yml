@@ -1,0 +1,56 @@
+name: Release
+
+# Builds the Windows pyturso wheels (no win_amd64 on PyPI, so we compile them on
+# a GitHub runner that already has Rust + MSVC + Windows SDK), builds the Neuron
+# package, and publishes a GitHub Release with all artifacts attached.
+#
+# Python matrix includes 3.14: a team member runs Neuron on 3.14 and the wheel
+# pyturso-0.6.1-cp314-cp314-win_amd64.whl is vendored manually — this job keeps
+# it regenerated automatically on every release / pyturso bump.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  # --- 1. Compile pyturso for Windows (no win_amd64 on PyPI → we build it) ---
+  build-pyturso-win:
+    runs-on: windows-latest          # already has Rust + MSVC + Windows SDK
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+          allow-prereleases: true    # 3.14 may still be pre-release on the runner
+      - run: pip wheel "pyturso==0.6.1" --no-deps -w wheelhouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pyturso-win-${{ matrix.python }}
+          path: wheelhouse/*.whl
+
+  # --- 2. Build the Neuron package + 3. Publish the Release ---
+  build-release:
+    needs: build-pyturso-win
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build           # dist/*.whl + dist/*.tar.gz
+      - run: python -m pip install dist/*.whl && python -c "import neuron; print(neuron.__version__)"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pyturso-win-*
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*                # neuron wheel + sdist + pyturso win wheels
+          generate_release_notes: true

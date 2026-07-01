@@ -1427,6 +1427,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 existing.topic = topic
                 existing.domain = domain
                 existing.sentiment = sentiment
+                g.mark_node_dirty(existing.keyword)   # in-place change: track it
             else:
                 g.add_node(Node(keyword=kw, turn=turn, topic=topic,
                                 domain=domain, sentiment=sentiment,
@@ -1448,8 +1449,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             g.add_link(lk)
             if src:
                 src.salience += WEIGHT_ORDER[lk.weight]
+                g.mark_node_dirty(src.keyword)
             if tgt:
                 tgt.salience += WEIGHT_ORDER[lk.weight]
+                g.mark_node_dirty(tgt.keyword)
 
         g.last_sentiment = sentiment
         g.last_topic = topic
@@ -1746,6 +1749,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 existing.topic = extraction.topic
                 existing.domain = extraction.domain
                 existing.sentiment = extraction.sentiment
+                g.mark_node_dirty(existing.keyword)   # in-place change: track it
             else:
                 g.add_node(Node(
                     keyword=kw, turn=turn, topic=extraction.topic,
@@ -1773,8 +1777,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             g.add_link(lk)
             if src:
                 src.salience += WEIGHT_ORDER[lk.weight]
+                g.mark_node_dirty(src.keyword)
             if tgt:
                 tgt.salience += WEIGHT_ORDER[lk.weight]
+                g.mark_node_dirty(tgt.keyword)
 
         g.last_sentiment = extraction.sentiment
         g.last_topic = extraction.topic
@@ -1864,11 +1870,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             nd = g.get_node(kw)
             if nd:
                 nd.salience += boost
+                g.mark_node_dirty(nd.keyword)
                 confirmed.append(kw)
             else:
                 skipped.append(kw)
         if confirmed:
-            g._dirty = True
             _g.save(ctx or None)
         return [TextContent(type="text", text=json.dumps({
             "confirmed": confirmed,
@@ -1918,7 +1924,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         g.links = unique_links
 
         if merged:
-            g._dirty = True
+            # merge rewrites node/link identity in bulk (rewired sources/targets,
+            # dropped aliases & self-loops) — per-row key tracking is unreliable
+            # here, so force a full reconcile (upsert-all + delete-stale-by-diff).
+            g.mark_full_rewrite()
             _g.save(ctx or None)
 
         return [TextContent(type="text", text=json.dumps({

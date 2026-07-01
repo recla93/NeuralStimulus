@@ -79,9 +79,9 @@ function Invoke-Pip {
 # ===============================================================
 # 1. PYTHON  (FIX A2: integer major/minor compare, locale-proof)
 # ===============================================================
-Write-Host "1. Python 3.10 - 3.13..." -ForegroundColor Yellow
+Write-Host "1. Python 3.10 - 3.14..." -ForegroundColor Yellow
 $py = Get-Command python -ErrorAction SilentlyContinue
-if (-not $py) { Write-Host "ERROR: Python not found in PATH. Install Python 3.10-3.13 from python.org." -ForegroundColor Red; exit 1 }
+if (-not $py) { Write-Host "ERROR: Python not found in PATH. Install Python 3.10-3.14 from python.org." -ForegroundColor Red; exit 1 }
 $verOut = python -c "import sys; print(sys.version_info.major, sys.version_info.minor)"
 $parts  = $verOut.Trim().Split()
 $maj = [int]$parts[0]; $min = [int]$parts[1]
@@ -89,11 +89,11 @@ Write-Host "   Detected Python $maj.$min : $(python -c 'import sys; print(sys.ex
 if ($maj -lt 3 -or ($maj -eq 3 -and $min -lt 10)) {
     Write-Host "ERROR: Python $maj.$min is too old (need >= 3.10)." -ForegroundColor Red; exit 1
 }
-# We ship prebuilt pyturso wheels for 3.10-3.13. Newer is allowed but will
-# take the compile fallback if no matching wheel is found.
-$inWheelMatrix = ($maj -eq 3 -and $min -ge 10 -and $min -le 13)
+# We ship prebuilt pyturso wheels for 3.10-3.14 (see .github/workflows/release.yml).
+# Newer is allowed but will take the compile fallback if no matching wheel is found.
+$inWheelMatrix = ($maj -eq 3 -and $min -ge 10 -and $min -le 14)
 if (-not $inWheelMatrix) {
-    Write-Host "   NOTE: Python $maj.$min is outside the prebuilt-wheel range (3.10-3.13)." -ForegroundColor DarkYellow
+    Write-Host "   NOTE: Python $maj.$min is outside the prebuilt-wheel range (3.10-3.14)." -ForegroundColor DarkYellow
     Write-Host "         pyturso will be COMPILED (the toolchain fallback will run)." -ForegroundColor DarkYellow
 }
 

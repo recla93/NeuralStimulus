@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from neuron import db as _db
 from neuron.models import Graph
 
 
@@ -109,8 +110,11 @@ class GraphRegistry:
         if ctx not in self._graphs:
             g = Graph()
             db = self._db_path(ctx)
-            if os.path.exists(db) and os.path.getsize(db) > 0:
-                g.load_sqlite(db)
+            # On remote Turso the graph lives in the shared cloud tables (scoped
+            # by the context column), not in a local file — so load regardless of
+            # local file existence. Locally, gate on the file as before.
+            if _db.REMOTE_TURSO or (os.path.exists(db) and os.path.getsize(db) > 0):
+                g.load_sqlite(db, context=ctx)
             if len(g.nodes) == 0 and self._seed_is_loadable():
                 # A missing, empty, placeholder, or corrupt seed must not crash
                 # the server — degrade to an empty graph. The seed is only a
@@ -118,10 +122,10 @@ class GraphRegistry:
                 # until base_knowledge.db is regenerated (scripts/import_vault.py).
                 try:
                     if ctx == "default":
-                        g.load_sqlite(self._seed_path)
+                        g.load_sqlite(self._seed_path, context="default", warm_start=True)
                         self._seed_loaded.add("default")
                     else:
-                        g.load_sqlite(self._seed_path, domain_filter=ctx)
+                        g.load_sqlite(self._seed_path, domain_filter=ctx, context=ctx, warm_start=True)
                         self._seed_loaded.add(ctx)
                 except Exception:
                     pass
@@ -188,7 +192,7 @@ class GraphRegistry:
         """Persist all dirty graphs to disk (never writes to seed)."""
         for ctx, g in self._graphs.items():
             if ctx not in self._seed_loaded:
-                g.save_sqlite(self._db_path(ctx))
+                g.save_sqlite(self._db_path(ctx), context=ctx)
         self._save_cross_links()
 
     def save(self, context: str | None = None) -> None:
@@ -196,7 +200,7 @@ class GraphRegistry:
         ctx = context or self._active
         g   = self.get(ctx)
         db  = self._db_path(ctx)
-        g.save_sqlite(db)
+        g.save_sqlite(db, context=ctx)
         self._seed_loaded.discard(ctx)
 
     def context_tree(self) -> dict[str, Any]:

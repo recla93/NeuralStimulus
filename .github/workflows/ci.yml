@@ -30,3 +30,22 @@ jobs:
       - name: Deploy script dry-run (sync sanity)
         shell: powershell
         run: ./scripts/deploy.ps1 -DryRun -Dest "${{ runner.temp }}\neuron-deploy-check"
+
+  # Verify the distributable actually builds, installs clean, and imports — the
+  # same wheel path release.yml publishes (catches packaging regressions early).
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist
+        run: pip install build && python -m build
+      - name: Install the wheel into a clean venv and import
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/python -c "import neuron; print('neuron', neuron.__version__)"
+      - name: Seed DB is packaged inside the wheel
+        run: python -c "import zipfile, glob; w = glob.glob('dist/*.whl')[0]; names = zipfile.ZipFile(w).namelist(); assert any(n.endswith('neuron/data/base_knowledge.db') for n in names), 'seed DB missing from wheel'; print('seed packaged OK')"
