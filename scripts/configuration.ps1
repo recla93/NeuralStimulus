@@ -500,7 +500,7 @@ function Invoke-Tests {
 function Invoke-Console {
     Clear-Host; Show-Banner
     Write-Host "`n  Live Graph Console - refreshes only when the graph changes." -ForegroundColor Yellow
-    Write-Host "  Press Ctrl+C to stop and return to the menu.`n" -ForegroundColor DarkGray
+    Write-Host "  Press q (or Esc) to stop and return to the menu.`n" -ForegroundColor DarkGray
     $py = Get-RunnerPython
     if (-not $py) { Write-Host "  [X] No Python available." -ForegroundColor Red; Pause-Any; return }
     if (-not (Test-NeuronReady $py)) { Show-NotInstalled "The Live Graph Console"; Pause-Any; return }
@@ -668,9 +668,12 @@ function Show-ClientTutorial {
     $vj     = $Vpy.Replace('\', '\\')   # backslashes doubled for valid JSON
 
     Write-Host ""
-    Write-Host "  ------------------------------------------------------------" -ForegroundColor DarkGray
-    Write-Host "  HOW TO DO THIS BY HAND (reference - already done for you)" -ForegroundColor Cyan
-    Write-Host "  No API key is needed: Neuron runs locally on your PC." -ForegroundColor Green
+    Write-Host "  ============================================================" -ForegroundColor Green
+    Write-Host "  [DONE] Neuron was added to your config AUTOMATICALLY." -ForegroundColor Green
+    Write-Host "         Just RESTART the app. No API key needed (runs locally)." -ForegroundColor Green
+    Write-Host "  ============================================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Reference only - how to do the same by hand / on another machine:" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  1) Open this folder:" -ForegroundColor Yellow
     Write-Host "       $folder" -ForegroundColor White

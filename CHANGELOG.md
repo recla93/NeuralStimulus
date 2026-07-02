@@ -23,6 +23,15 @@ Release.
   pointer to it, so the human (not just the model) can see what each feature does.
 
 ### Fixed
+- **The MCP server no longer crashes when cloud creds are set but the `cloud`
+  extra isn't installed.** `db.py` caught the bridge on a fresh install
+  (`ModuleNotFoundError: libsql_client`): it now warns and falls back to the local
+  engine instead of failing to import.
+- **Live Graph Console can be stopped with `q`/`Esc`** instead of `Ctrl+C` (which
+  tore down the whole `Configuration.bat`). It polls for the key during the refresh
+  interval, so quitting is instant.
+- **Add-to-AI now leads with a clear "[DONE] added automatically" banner** so it's
+  obvious the config was written for you; the by-hand steps are marked reference-only.
 - **Heuristic extraction no longer promotes Italian action verbs / connectors to
   graph nodes** (`usiamo`, `riduciamo`, `disegnare`, `adottiamo`, `passiamo`,
   `via`, …). The IT+EN stoplist was extended with the common conjugations

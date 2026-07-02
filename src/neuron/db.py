@@ -35,7 +35,24 @@ except ImportError:
     LOCAL_TURSO_ENGINE = False
 
 if REMOTE_TURSO:
-    import libsql_client
+    try:
+        import libsql_client
+    except ImportError:
+        # Cloud creds are set but the 'cloud' extra (libsql-client) isn't
+        # installed. Don't crash the whole server on import — degrade to the
+        # local engine and tell the user how to enable cloud. This is exactly
+        # the case that killed the bridge on a fresh install.
+        import sys as _sys
+        print(
+            "neuron: TURSO_DATABASE_URL/TOKEN are set but the 'cloud' extra is "
+            "not installed, so the cloud tier is unavailable. Falling back to the "
+            "local engine. To enable cloud, install libsql-client:\n"
+            "        pip install \"neuron[cloud]\"\n"
+            "  (or use Configuration.bat -> Bridge & Cloud Turso -> Connect).",
+            file=_sys.stderr,
+        )
+        libsql_client = None  # type: ignore[assignment]
+        REMOTE_TURSO = False
 else:
     libsql_client = None  # type: ignore[assignment]
 

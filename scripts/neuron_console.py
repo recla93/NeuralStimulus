@@ -159,10 +159,26 @@ def _signature(dbs: list[dict]):
     )
 
 
+def _quit_pressed() -> bool:
+    """True if the user pressed q/Q/Esc. A graceful way to stop the live watch
+    WITHOUT Ctrl+C — Ctrl+C tended to tear down the whole Configuration.bat.
+    Windows-only (msvcrt); a no-op elsewhere (Ctrl+C still works there)."""
+    try:
+        import msvcrt
+    except ImportError:
+        return False
+    hit = False
+    while msvcrt.kbhit():
+        ch = msvcrt.getch()
+        if ch in (b"q", b"Q", b"\x1b"):  # q or Esc
+            hit = True
+    return hit
+
+
 def _watch(interval: int) -> None:
     """Poll every `interval` seconds but only re-print when the graph changes.
     The first snapshot always prints; after that the screen stays still until a
-    node/link/vector count actually moves."""
+    node/link/vector count actually moves. Press q (or Esc) to stop."""
     last = None
     first = True
     try:
@@ -171,9 +187,17 @@ def _watch(interval: int) -> None:
             sig = _signature(dbs)
             if first or sig != last:
                 _print_report(dbs)
+                print("  (press q to stop and return to the menu)")
                 last = sig
                 first = False
-            time.sleep(interval)
+            # Poll for 'q' in small slices so quitting feels instant.
+            waited = 0.0
+            while waited < interval:
+                if _quit_pressed():
+                    print("\n  Exited.")
+                    return
+                time.sleep(0.2)
+                waited += 0.2
     except KeyboardInterrupt:
         print("\n  Exited.")
 
