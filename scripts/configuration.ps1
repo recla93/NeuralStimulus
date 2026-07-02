@@ -591,6 +591,7 @@ function Invoke-Bridge {
     }
 
     # --- Plan B #2: libsql is ONLY for the cloud tier, not for the bridge ---
+    $serveLocal = $false
     if (Test-CloudCredsConfigured) {
         & $py -c "import libsql_client" 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -600,8 +601,8 @@ function Invoke-Bridge {
                 & $py -m pip install "libsql-client>=0.3.1"
                 & $py -c "import libsql_client" 2>$null
                 if ($LASTEXITCODE -eq 0) { Write-Host "  [OK] Cloud tier enabled." -ForegroundColor Green }
-                else { Write-Host "  [!] Install failed - Plan B: serving the LOCAL engine." -ForegroundColor DarkYellow }
-            } else { Write-Host "  Serving the LOCAL engine (Plan B)." -ForegroundColor DarkGray }
+                else { Write-Host "  [!] Install failed - Plan B: serving the LOCAL engine." -ForegroundColor DarkYellow; $serveLocal = $true }
+            } else { Write-Host "  Serving the LOCAL engine (Plan B)." -ForegroundColor DarkGray; $serveLocal = $true }
         }
     }
 
@@ -609,8 +610,28 @@ function Invoke-Bridge {
     Write-Host "  To reach it from ChatGPT you still need a public HTTPS tunnel, e.g.:" -ForegroundColor Gray
     Write-Host "     cloudflared tunnel --url http://127.0.0.1:8000" -ForegroundColor Gray
     Write-Host "  Then add the https://.../sse URL as a connector. Press Ctrl+C to stop.`n" -ForegroundColor Gray
+
+    # When serving local, SUPPRESS cloud creds for the Neuron child so it never
+    # tries the cloud tier — this makes the bridge work even with an OLDER installed
+    # db.py that imports libsql_client whenever TURSO_* are present. NEURON_NO_DOTENV
+    # stops the .env load; clearing the env vars covers real process-level creds too.
+    $savedUrl = $env:TURSO_DATABASE_URL; $savedTok = $env:TURSO_AUTH_TOKEN; $savedNoDot = $env:NEURON_NO_DOTENV
+    if ($serveLocal) {
+        $env:NEURON_NO_DOTENV = "1"
+        Remove-Item Env:TURSO_DATABASE_URL -ErrorAction SilentlyContinue
+        Remove-Item Env:TURSO_AUTH_TOKEN  -ErrorAction SilentlyContinue
+    }
     Push-Location $Repo
-    try { & $py "$ScriptDir\bridge.py" } catch {} finally { Pop-Location }
+    try { & $py "$ScriptDir\bridge.py" }
+    catch {}
+    finally {
+        Pop-Location
+        if ($serveLocal) {
+            if ($null -ne $savedUrl) { $env:TURSO_DATABASE_URL = $savedUrl }
+            if ($null -ne $savedTok) { $env:TURSO_AUTH_TOKEN = $savedTok }
+            if ($null -ne $savedNoDot) { $env:NEURON_NO_DOTENV = $savedNoDot } else { Remove-Item Env:NEURON_NO_DOTENV -ErrorAction SilentlyContinue }
+        }
+    }
     Pause-Any
 }
 

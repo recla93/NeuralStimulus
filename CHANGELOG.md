@@ -32,9 +32,11 @@ Release.
   interval, so quitting is instant.
 - **Bridge has Plan-B pre-flight checks.** It needs a runner for `mcp-proxy`
   (uv/uvx/pipx) — if none is found it offers to install `uv`. And if Turso cloud
-  creds are set but `libsql-client` isn't installed, it offers to install it,
-  otherwise serves the local engine. (libsql is only for the cloud tier — the
-  bridge itself never needs it.)
+  creds are set but `libsql-client` isn't installed, it offers to install it;
+  otherwise it serves the local engine — and, in that local path, launches Neuron
+  with the cloud creds suppressed (`NEURON_NO_DOTENV`), so the bridge starts even
+  against an OLDER installed `db.py` that imports `libsql_client` unconditionally.
+  (libsql is only for the cloud tier — the bridge itself never needs it.)
 - **Add-to-AI now leads with a clear "[DONE] added automatically" banner** so it's
   obvious the config was written for you; the by-hand steps are marked reference-only.
 - **Heuristic extraction no longer promotes Italian action verbs / connectors to
