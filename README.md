@@ -21,6 +21,12 @@ Requires **Python 3.10–3.14**.
 
 ### Windows
 
+The easy path: **double-click `Configuration.bat`** and choose
+**Install / Update Neuron → FULL**. It handles everything (prerequisites →
+PyTurso → Neuron + embedding model), can wire Neuron into your AI app, and every
+run is logged under `%LOCALAPPDATA%\Programs\neuron\logs\`. Or run the installer
+directly:
+
 ```powershell
 .\install.ps1
 ```
@@ -30,6 +36,11 @@ wheel** from `.\vendor` (Python 3.10–3.14) so no C/Rust compiler is needed —
 to the *minimal* MSVC build tools if your Python is outside that prebuilt range. `fastembed`
 (semantic embeddings) is mandatory. See **[INSTALL.md](INSTALL.md)** for the manual path and
 troubleshooting.
+
+**Updating an existing install:** pull the latest, then `Configuration.bat` →
+**Install / Update Neuron → FULL**. It installs with `pip --upgrade` and refuses
+to let an older bundled wheel shadow newer source, so you always land the newest
+code. (To start completely clean, use **Clean install / Uninstall Neuron** first.)
 
 ### Linux / macOS
 
@@ -72,19 +83,24 @@ with `NEURON_NO_DOTENV=1`). To validate end-to-end against your Turso DB:
 
 For a whole team on one shared DB, see the **[Team guide](docs/TEAM.md)**.
 
-## Seed knowledge
+## Seed knowledge (optional — bring your own)
 
-Neuron can start from a **seed graph** so the AI isn't blank on turn one. The seed ships inside
-the wheel at `neuron/data/base_knowledge.db`; without one, Neuron just starts empty and learns.
-To build a seed from an Obsidian vault:
+A **seed** is an optional pre-built knowledge base (your notes/docs turned into nodes + 384-dim
+vectors) that warm-starts cross-domain suggestions so the AI isn't blank on turn one.
+
+**Neuron ships without a seed** — it works completely fine empty and learns from your
+conversations. (We deliberately don't bundle one: a seed is personal, and a bad/placeholder DB
+used to crash vector search. The loader now hard-guards against any seed that isn't a real
+SQLite file ≥ 512 bytes.) In `Configuration.bat`, **“Seed knowledge DB (what & how)”** walks you
+through building one. Manually:
 
 ```bash
 export NEURON_VAULT=/path/to/vault    # Windows: set NEURON_VAULT=C:\path\to\vault
-python scripts/import_vault.py         # -> ./knowledge/base_knowledge.db (local)
+python scripts/import_vault.py         # -> ./knowledge/base_knowledge.db (local, with vectors)
 ```
 
-Copy the result to `src/neuron/data/base_knowledge.db` only when you deliberately want to ship
-it as the packaged seed. Details in [INSTALL.md](INSTALL.md).
+To ship it as the default seed, copy the generated DB to `src/neuron/data/base_knowledge.db` —
+**only** a real, populated SQLite file (never a truncated stub). See [docs/DEVELOPER.md](docs/DEVELOPER.md).
 
 ## Mounting in an MCP client
 

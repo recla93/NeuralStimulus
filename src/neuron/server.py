@@ -718,6 +718,24 @@ def _get_embedding(text: str) -> list[float]:
 # ---------------------------------------------------------------------------
 
 
+def _seed_usable(path: "str | None") -> bool:
+    """True only if `path` is a real SQLite/Turso DB — not missing, and not the
+    tiny placeholder stub shipped before base_knowledge.db is generated.
+
+    The vector-search paths below open the seed directly (outside the registry's
+    guarded loader), so without this check they'd try to query the 26-byte stub
+    and pyturso raises 'I/O error: short read on page 1: expected 512, got 26'.
+    A valid SQLite file is >= 512 bytes and starts with the magic header.
+    Mirrors GraphRegistry._seed_is_loadable."""
+    try:
+        if not path or not os.path.isfile(path) or os.path.getsize(path) < 512:
+            return False
+        with open(path, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
 def _search_embeddings(
     query_keywords: list[str],
     top_n: int = 8,
@@ -731,7 +749,15 @@ def _search_embeddings(
 
     if TURSO_ENGINE:
         seed_path = getattr(_g, '_seed_path', None)
-        db_paths = [p for p in [seed_path, _active_db_path()] if p and os.path.exists(p)]
+        # Only include the seed if it's a real DB (not the placeholder stub); the
+        # active DB is included when present. os.path.exists alone let a truncated
+        # seed through and crashed the query.
+        db_paths = []
+        if _seed_usable(seed_path):
+            db_paths.append(seed_path)
+        adp = _active_db_path()
+        if adp and os.path.exists(adp):
+            db_paths.append(adp)
         for db in db_paths:
             try:
                 conn = _db.connect_local(db)
@@ -746,7 +772,10 @@ def _search_embeddings(
                 results = [(row[0], round(row[1], 4)) for row in rows]
                 if results:
                     return results
-            except sqlite3.DatabaseError:
+            except Exception:
+                # Any DB/engine error (incl. pyturso I/O errors that are not
+                # sqlite3.DatabaseError) must fall through to the Python path,
+                # never crash the tool.
                 pass
 
     scores: list[tuple[str, float]] = []
@@ -772,13 +801,13 @@ def _refine_domain(keywords: list[str]) -> tuple[str | None, list[str]]:
     specific domain (non-general) above threshold (0.35), or None if nothing matches.
     alternative_domains contains all other domains within the tie margin (0.05) for multi-domain tagging."""
     query_vec = _get_embedding(" ".join(keywords))
-    query_blob = _pack_vector(query_vec)
+    query_blob = pack_vector(query_vec)
 
     rows: list[tuple[str, float]] = []
 
     if TURSO_ENGINE:
         seed_path = getattr(_g, '_seed_path', None)
-        if seed_path and os.path.exists(seed_path):
+        if _seed_usable(seed_path):
             try:
                 conn = _db.connect_local(seed_path)
                 rows = conn.execute("""
@@ -789,7 +818,7 @@ def _refine_domain(keywords: list[str]) -> tuple[str | None, list[str]]:
                     ORDER BY sim DESC LIMIT 30
                 """, (query_blob,)).fetchall()
                 conn.close()
-            except sqlite3.DatabaseError:
+            except Exception:
                 pass
 
     # Fallback: Python loop over loaded graphs (non-Turso or Turso query failed)

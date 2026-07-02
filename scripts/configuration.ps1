@@ -209,9 +209,8 @@ function Test-NeuronReady {
 function Show-NotInstalled {
     param([string]$What)
     Write-Host "  [!] $What needs Neuron installed, but it isn't importable yet." -ForegroundColor DarkYellow
-    Write-Host "      Run these first (menu items):" -ForegroundColor DarkYellow
-    Write-Host "        2) Install prerequisites   3) Install PyTurso   4) Install full Neuron" -ForegroundColor DarkYellow
-    Write-Host "      (or the 'Install EVERYTHING' shortcut)." -ForegroundColor DarkYellow
+    Write-Host "      From the main menu: '2) Install / Update Neuron...' ->" -ForegroundColor DarkYellow
+    Write-Host "      'Install / Update Neuron (FULL - recommended)'." -ForegroundColor DarkYellow
 }
 
 # ---------------------------------------------------------------------------
@@ -270,7 +269,7 @@ function Invoke-Prereqs {
     $vpy = "$venv\Scripts\python.exe"
     Write-Host "  Upgrading pip ..." -ForegroundColor Yellow
     & $vpy -m pip install --upgrade pip
-    Write-Host "`n  [OK] Prerequisites ready. Next: install PyTurso (menu item 3)." -ForegroundColor Green
+    Write-Host "`n  [OK] Prerequisites ready. Next: 'PyTurso engine only', or just run the FULL install." -ForegroundColor Green
     Pause-Any
 }
 
@@ -318,11 +317,24 @@ function Invoke-Neuron {
     # Prefer a built wheel (dist\ or repo root); fall back to installing the source tree.
     $wheel = Get-ChildItem -Path $Repo, "$Repo\dist" -Filter "neuron-*.whl" -ErrorAction SilentlyContinue |
              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # Don't let a STALE bundled wheel shadow newer source (that would silently
+    # install an old version on 'update'). Read the source version and skip an
+    # older wheel so updates always land the newest code.
+    $srcVer = $null
+    $initTxt = Get-Content "$Repo\src\neuron\__init__.py" -Raw -ErrorAction SilentlyContinue
+    if ($initTxt -match '__version__\s*=\s*"([\d.]+)"') { $srcVer = $Matches[1] }
+    if ($wheel -and $srcVer -and ($wheel.Name -match 'neuron-([\d.]+)-')) {
+        if ([version]$Matches[1] -lt [version]$srcVer) {
+            Write-Host "  Ignoring older bundled wheel ($($Matches[1]) < source $srcVer) - building from source." -ForegroundColor DarkYellow
+            $wheel = $null
+        }
+    }
     $target = if ($wheel) { $wheel.FullName } else { $Repo }
     if ($wheel) { Write-Host "  Wheel: $($wheel.Name)" -ForegroundColor Gray }
-    else        { Write-Host "  No wheel found - installing from source tree ($Repo)." -ForegroundColor DarkYellow }
+    else        { Write-Host "  Installing from source tree ($Repo)." -ForegroundColor DarkYellow }
 
-    $pipArgs = @("-m", "pip", "install", $target)
+    # --upgrade so an existing (older) install is actually replaced.
+    $pipArgs = @("-m", "pip", "install", "--upgrade", $target)
     if (Test-Path $Vendor) { $pipArgs += @("--find-links", $Vendor) }
     Write-Host ""
     & $InstallVenvPy @pipArgs
@@ -340,7 +352,7 @@ function Invoke-Neuron {
     Invoke-ModelPrewarm -py $InstallVenvPy
 
     Write-Host "`n  Neuron installed into $InstallDir" -ForegroundColor Green
-    Write-Host "  Next: 'Add Neuron to your AI' (menu item 5) to wire it into your app." -ForegroundColor Green
+    Write-Host "  Next: main menu -> '3) Add Neuron to your AI' to wire it into your app." -ForegroundColor Green
     Pause-Any
 }
 
@@ -355,11 +367,18 @@ function Invoke-ModelPrewarm {
         return
     }
     Write-Host "`n  Downloading the embedding model (~80MB, one-time). This can take a minute..." -ForegroundColor Yellow
-    & $py -c "from fastembed import TextEmbedding; e=TextEmbedding('sentence-transformers/all-MiniLM-L6-v2'); list(e.embed(['warm up'])); print('  [OK] embedding model cached - first use will be instant')"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  [!] Could not download it now (offline or blocked)." -ForegroundColor DarkYellow
-        Write-Host "      No problem - Neuron will fetch it automatically the first time you" -ForegroundColor DarkYellow
-        Write-Host "      use it online. Nothing else is affected." -ForegroundColor DarkYellow
+    $code = "from fastembed import TextEmbedding; e=TextEmbedding('sentence-transformers/all-MiniLM-L6-v2'); list(e.embed(['warm up'])); print('OK')"
+    # Run from the install dir (a known-good cwd, same as the server) and CAPTURE
+    # output so a Python traceback never dumps a scary wall of text at the user.
+    Push-Location $InstallDir
+    try { $out = & $py -c $code 2>&1 } finally { Pop-Location }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  [OK] Embedding model cached - first use will be instant." -ForegroundColor Green
+    } else {
+        $reason = ($out | Where-Object { $_ -match '\S' } | Select-Object -Last 1)
+        Write-Host "  [!] Could not pre-download the model right now (this is NON-fatal)." -ForegroundColor DarkYellow
+        Write-Host "      Neuron will fetch it automatically the first time you use it." -ForegroundColor DarkYellow
+        if ($reason) { Write-Host "      Reason: $reason" -ForegroundColor DarkGray }
     }
 }
 
@@ -368,6 +387,86 @@ function Invoke-InstallEverything {
     Invoke-Prereqs
     Invoke-PyTurso
     Invoke-Neuron
+}
+
+# Run an action while capturing EVERYTHING to a timestamped log, so install
+# errors that scroll off (or that a later screen-clear wipes) are always
+# recoverable. Prints the log path at the end.
+function Invoke-Logged {
+    param([string]$Name, [scriptblock]$Action)
+    $logDir = Join-Path $InstallDir "logs"
+    try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch {}
+    $log = Join-Path $logDir ("{0}-{1}.log" -f $Name, (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $started = $false
+    try { Start-Transcript -Path $log -ErrorAction Stop | Out-Null; $started = $true } catch {}
+    try { & $Action }
+    finally {
+        if ($started) {
+            try { Stop-Transcript | Out-Null } catch {}
+            Write-Host "`n  A full log of this run was saved to:" -ForegroundColor DarkGray
+            Write-Host "    $log" -ForegroundColor DarkGray
+            Write-Host "  (If anything failed above, copy that file when asking for help.)" -ForegroundColor DarkGray
+            Pause-Any
+        }
+    }
+}
+
+# Consolidated install menu: exactly three choices (FULL / dependencies /
+# PyTurso), all logged. FULL doubles as the UPDATE path (uses pip --upgrade).
+function Show-InstallMenu {
+    while ($true) {
+        $idx = Show-Menu -Title "Install / Update Neuron" -Options @(
+            "Install / Update Neuron (FULL - recommended)",
+            "Dependencies only (Python + venv)",
+            "PyTurso engine only",
+            "Back"
+        ) -Descriptions @(
+            "Does everything: prerequisites -> PyTurso -> Neuron + model. Also UPDATES an existing install.",
+            "Just verify Python and create the install venv (no packages yet).",
+            "Just (re)install the PyTurso database engine from the bundled wheel.",
+            ""
+        )
+        switch ($idx) {
+            0 { Invoke-Logged -Name "install-full" -Action { Invoke-InstallEverything } }
+            1 { Invoke-Logged -Name "install-deps" -Action { Invoke-Prereqs } }
+            2 { Invoke-Logged -Name "install-pyturso" -Action { Invoke-PyTurso } }
+            default { return }
+        }
+    }
+}
+
+# Explain what the seed knowledge DB is and how to build/import one.
+function Invoke-SeedGuide {
+    Clear-Host; Show-Banner
+    Write-Host "`n  Seed knowledge DB - what it is & how to build one`n" -ForegroundColor Yellow
+    Write-Host "  Neuron builds a private memory graph from YOUR conversations as you go." -ForegroundColor Gray
+    Write-Host "  The optional 'seed' is a pre-built knowledge base (notes/docs turned into" -ForegroundColor Gray
+    Write-Host "  nodes + 384-dim vectors) that warm-starts cross-domain suggestions." -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Neuron now ships WITHOUT a seed (empty base knowledge)." -ForegroundColor Cyan
+    Write-Host "  Everything works without one - you just won't get seeded cross-domain hits" -ForegroundColor Gray
+    Write-Host "  until you build your own. To build one from a folder of notes/markdown:" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "    1. Put your notes/docs in one folder (an Obsidian vault works well)." -ForegroundColor White
+    Write-Host "    2. Run:" -ForegroundColor White
+    Write-Host "         set NEURON_VAULT=C:\path\to\your\notes" -ForegroundColor White
+    Write-Host "         `"$InstallVenvPy`" `"$ScriptDir\import_vault.py`"" -ForegroundColor White
+    Write-Host "       (or:  python scripts\import_vault.py --vault <path> --out .\knowledge\base_knowledge.db)" -ForegroundColor Gray
+    Write-Host "    3. To SHIP it as the default seed, copy the generated .db to:" -ForegroundColor White
+    Write-Host "         src\neuron\data\base_knowledge.db   (only if you want it bundled)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Full details: README.md and docs\DEVELOPER.md ('Seed knowledge')." -ForegroundColor DarkGray
+    if ((Test-Path $InstallVenvPy) -and (Confirm-YesNo "Do you have a notes folder ready to import now?")) {
+        $vault = Read-Host "  Path to your notes/vault folder"
+        if ($vault -and (Test-Path $vault)) {
+            $env:NEURON_VAULT = $vault
+            Push-Location $Repo
+            try { & $InstallVenvPy "$ScriptDir\import_vault.py" } catch {} finally { Pop-Location }
+        } else {
+            Write-Host "  That path doesn't exist - skipped." -ForegroundColor DarkYellow
+        }
+    }
+    Pause-Any
 }
 
 # ---------------------------------------------------------------------------
@@ -558,6 +657,72 @@ function Save-Json {
     Write-Host "       (previous version, if any, saved as *.neuron-bak)" -ForegroundColor DarkGray
 }
 
+# Detailed, copy-paste tutorial per client. Printed AFTER we auto-write the
+# config, so a non-technical user can (a) see exactly what was done, (b) redo it
+# by hand on another machine, and (c) know how to verify it. No API key is ever
+# needed for a local MCP server - that's called out explicitly.
+function Show-ClientTutorial {
+    param([string]$App, [string]$Path, [string]$Vpy)
+    $folder = Split-Path -Parent $Path
+    $file   = Split-Path -Leaf   $Path
+    $vj     = $Vpy.Replace('\', '\\')   # backslashes doubled for valid JSON
+
+    Write-Host ""
+    Write-Host "  ------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "  HOW TO DO THIS BY HAND (reference - already done for you)" -ForegroundColor Cyan
+    Write-Host "  No API key is needed: Neuron runs locally on your PC." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  1) Open this folder:" -ForegroundColor Yellow
+    Write-Host "       $folder" -ForegroundColor White
+    Write-Host "  2) Open (or create) this file:" -ForegroundColor Yellow
+    Write-Host "       $file" -ForegroundColor White
+    Write-Host "  3) Add the 'neuron' entry shown below (merge into what's there)." -ForegroundColor Yellow
+    Write-Host ""
+
+    switch ($App) {
+        'claude-desktop' {
+            Write-Host "     In Claude Desktop you can open this file via:" -ForegroundColor Gray
+            Write-Host "       Settings (gear) -> Developer -> Edit Config" -ForegroundColor Gray
+            Write-Host "     (The web 'Connectors' panel is for REMOTE servers; a local one" -ForegroundColor DarkGray
+            Write-Host "      like Neuron goes in this config file.)" -ForegroundColor DarkGray
+            Write-Host ""
+            Write-Host "     {" -ForegroundColor White
+            Write-Host "       `"mcpServers`": {" -ForegroundColor White
+            Write-Host "         `"neuron`": { `"command`": `"$vj`", `"args`": [`"-m`", `"neuron`"] }" -ForegroundColor White
+            Write-Host "       }" -ForegroundColor White
+            Write-Host "     }" -ForegroundColor White
+            Write-Host ""
+            Write-Host "  4) FULLY quit Claude Desktop (right-click tray icon -> Quit) and reopen." -ForegroundColor Yellow
+            Write-Host "     Neuron then appears under the tools/hammer icon in a chat." -ForegroundColor Gray
+        }
+        'claude-code' {
+            Write-Host "     EASIEST - just run this command in a terminal:" -ForegroundColor Gray
+            Write-Host "       claude mcp add neuron -- `"$Vpy`" -m neuron" -ForegroundColor White
+            Write-Host "     Or edit the file by hand ($file) and add:" -ForegroundColor Gray
+            Write-Host "       `"mcpServers`": { `"neuron`": { `"command`": `"$vj`", `"args`": [`"-m`",`"neuron`"], `"cwd`": `"$($InstallDir.Replace('\','\\'))`" } }" -ForegroundColor White
+            Write-Host "  4) Verify with:  claude mcp list   (neuron should be listed)" -ForegroundColor Yellow
+        }
+        'cursor' {
+            Write-Host "     `"mcpServers`": { `"neuron`": { `"command`": `"$vj`", `"args`": [`"-m`",`"neuron`"] } }" -ForegroundColor White
+            Write-Host "  4) Cursor -> Settings -> MCP: toggle 'neuron' ON, then restart Cursor." -ForegroundColor Yellow
+        }
+        'vscode' {
+            Write-Host "     `"mcp`": { `"servers`": { `"neuron`": { `"type`":`"stdio`", `"command`": `"$vj`", `"args`": [`"-m`",`"neuron`"] } } }" -ForegroundColor White
+            Write-Host "  4) Restart VS Code. Needs an MCP client: Copilot agent mode or the" -ForegroundColor Yellow
+            Write-Host "     'Continue' extension. Open it and Neuron's tools appear." -ForegroundColor Gray
+        }
+        'opencode' {
+            Write-Host "     `"mcp`": { `"neuron`": { `"command`": [`"$vj`",`"-m`",`"neuron`"], `"type`":`"local`" } }" -ForegroundColor White
+            Write-Host "  4) Restart OpenCode." -ForegroundColor Yellow
+        }
+        'zed' {
+            Write-Host "     `"context_servers`": { `"neuron`": { `"command`": { `"path`": `"$vj`", `"args`": [`"-m`",`"neuron`"] } } }" -ForegroundColor White
+            Write-Host "  4) Restart Zed." -ForegroundColor Yellow
+        }
+    }
+    Write-Host "  ------------------------------------------------------------" -ForegroundColor DarkGray
+}
+
 function Write-ClientConfig {
     param([string]$App)
     $vpy = Get-ConfigPython
@@ -577,7 +742,7 @@ function Write-ClientConfig {
             $servers = Get-OrAddObject $cfg 'mcpServers'
             Set-Prop $servers 'neuron' ([pscustomobject]@{ command = $vpy; args = $nargs })
             Save-Json $cfg $path
-            Write-Host "  -> Fully restart Claude Desktop (quit from the tray) to load Neuron." -ForegroundColor Cyan
+            Show-ClientTutorial -App 'claude-desktop' -Path $path -Vpy $vpy
         }
         'claude-code' {
             $path = "$env:USERPROFILE\.claude.json"
@@ -586,7 +751,7 @@ function Write-ClientConfig {
             $servers = Get-OrAddObject $cfg 'mcpServers'
             Set-Prop $servers 'neuron' ([pscustomobject]@{ command = $vpy; args = $nargs; cwd = $InstallDir })
             Save-Json $cfg $path
-            Write-Host "  -> Restart Claude Code. (Per-project alternative: a .mcp.json in the repo.)" -ForegroundColor Cyan
+            Show-ClientTutorial -App 'claude-code' -Path $path -Vpy $vpy
         }
         'cursor' {
             $path = "$env:USERPROFILE\.cursor\mcp.json"
@@ -595,7 +760,7 @@ function Write-ClientConfig {
             $servers = Get-OrAddObject $cfg 'mcpServers'
             Set-Prop $servers 'neuron' ([pscustomobject]@{ command = $vpy; args = $nargs })
             Save-Json $cfg $path
-            Write-Host "  -> Restart Cursor; enable 'neuron' under Settings > MCP if prompted." -ForegroundColor Cyan
+            Show-ClientTutorial -App 'cursor' -Path $path -Vpy $vpy
         }
         'vscode' {
             $path = "$env:APPDATA\Code\User\settings.json"
@@ -605,7 +770,7 @@ function Write-ClientConfig {
             $servers = Get-OrAddObject $mcp 'servers'
             Set-Prop $servers 'neuron' ([pscustomobject]@{ type = 'stdio'; command = $vpy; args = $nargs })
             Save-Json $cfg $path
-            Write-Host "  -> Restart VS Code. Needs an MCP-capable client (Copilot Agent mode / Continue)." -ForegroundColor Cyan
+            Show-ClientTutorial -App 'vscode' -Path $path -Vpy $vpy
         }
         'opencode' {
             $path = "$env:USERPROFILE\.config\opencode\opencode.json"
@@ -614,7 +779,7 @@ function Write-ClientConfig {
             $mcp = Get-OrAddObject $cfg 'mcp'
             Set-Prop $mcp 'neuron' ([pscustomobject]@{ command = @($vpy, '-m', 'neuron'); type = 'local' })
             Save-Json $cfg $path
-            Write-Host "  -> Restart OpenCode." -ForegroundColor Cyan
+            Show-ClientTutorial -App 'opencode' -Path $path -Vpy $vpy
         }
         'zed' {
             $path = "$env:APPDATA\Zed\settings.json"
@@ -623,7 +788,7 @@ function Write-ClientConfig {
             $cs = Get-OrAddObject $cfg 'context_servers'
             Set-Prop $cs 'neuron' ([pscustomobject]@{ command = [pscustomobject]@{ path = $vpy; args = $nargs } })
             Save-Json $cfg $path
-            Write-Host "  -> Restart Zed." -ForegroundColor Cyan
+            Show-ClientTutorial -App 'zed' -Path $path -Vpy $vpy
         }
     }
 }
@@ -881,45 +1046,39 @@ function Main {
         $status = if (Test-NeuronReady $InstallVenvPy) { "Neuron: INSTALLED" } else { "Neuron: not installed yet" }
         $idx = Show-Menu -Title "What would you like to do?    [$status]" -Options @(
             "1) Check my system",
-            "2) Install prerequisites (Python + venv)",
-            "3) Install PyTurso engine (prebuilt wheel)",
-            "4) Install full Neuron",
-            "5) Add Neuron to your AI",
-            "6) Bridge & Cloud Turso...",
-            "7) Run the test suite",
-            "8) Live Log Console",
-            "-  Install EVERYTHING (steps 2 -> 4 in one go)",
+            "2) Install / Update Neuron...",
+            "3) Add Neuron to your AI",
+            "4) Bridge & Cloud Turso...",
+            "5) Seed knowledge DB (what & how)",
+            "6) Run the test suite",
+            "7) Live Graph Console",
             "-  Clean install / Uninstall Neuron",
             "Exit"
         ) -Descriptions @(
-            "Diagnose Python, Rust, MSVC and Python deps; offer to auto-repair.",
-            "Verify Python 3.10-3.14 and create the install venv. Do this BEFORE Turso.",
-            "Install the database engine from the bundled wheel - no Rust/MSVC, no hang.",
-            "Install the Neuron package + all deps, then verify the imports.",
-            "Write the MCP config for Claude, Cursor, VS Code, OpenCode, Zed or ChatGPT.",
+            "Diagnose Python, deps and (only if needed) the Rust/MSVC toolchain; auto-repair.",
+            "FULL install / update, or just Dependencies / PyTurso. All runs are logged.",
+            "Wire Neuron into Claude, Cursor, VS Code, OpenCode, Zed or ChatGPT (with a paste-by-hand tutorial).",
             "Connect a Turso Cloud DB and/or launch the HTTP bridge for remote clients.",
+            "What the optional seed knowledge base is and how to build/import your own.",
             "Run the pytest suite (core-only or full).",
             "Live graph view (nodes/links/health) - refreshes only when it changes.",
-            "Runs prerequisites, PyTurso and full Neuron back-to-back.",
             "Remove the install (venv, shortcut, app registrations); optionally reinstall fresh.",
             "Close the Configuration Center."
         )
 
         switch ($idx) {
             0 { Invoke-Check }
-            1 { Invoke-Prereqs }
-            2 { Invoke-PyTurso }
-            3 { Invoke-Neuron }
-            4 { Invoke-AddToAI }
-            5 { Show-BridgeCloudMenu }
-            6 { Invoke-Tests }
-            7 { Invoke-Console }
-            8 { Invoke-InstallEverything }
-            9 { Invoke-CleanUninstall }
-            10      { break }
+            1 { Show-InstallMenu }
+            2 { Invoke-AddToAI }
+            3 { Show-BridgeCloudMenu }
+            4 { Invoke-SeedGuide }
+            5 { Invoke-Tests }
+            6 { Invoke-Console }
+            7 { Invoke-CleanUninstall }
+            8       { break }
             default { break }   # Esc
         }
-        if ($idx -eq 10 -or $idx -eq -1) { break }
+        if ($idx -eq 8 -or $idx -eq -1) { break }
     }
     Clear-Host
     Write-Host "`n  Thanks for using Neuron. Bye!`n" -ForegroundColor Cyan

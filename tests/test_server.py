@@ -15,10 +15,13 @@ if _project_root not in sys.path:
 # ---------------------------------------------------------------------------
 
 def test_import_package():
-    """Package imports and version string is correct."""
+    """Package imports and exposes a valid semver version string."""
+    import re
     import neuron
     assert hasattr(neuron, "__version__")
-    assert neuron.__version__ == "3.3.0"
+    # Match a semver-ish string rather than a hardcoded value, so a version bump
+    # doesn't break the suite (it did on 3.3.0 -> 3.3.1).
+    assert re.match(r"^\d+\.\d+\.\d+", neuron.__version__), neuron.__version__
 
 
 def test_import_server():
