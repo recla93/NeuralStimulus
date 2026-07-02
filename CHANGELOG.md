@@ -15,56 +15,30 @@ it. Bump it in the same change that introduces the work. Tagging `vX.Y.Z` trigge
 `release.yml`, which builds the prebuilt PyTurso wheels and publishes a GitHub
 Release.
 
-## [Unreleased] — 4.1.0 (in progress)
+## [Unreleased]
 
-### Added
-- **`help` tool** — lists every Neuron command with a one-line explanation, grouped
-  (per-turn loop / search / contexts / upkeep / data). `status` now ends with a
-  pointer to it, so the human (not just the model) can see what each feature does.
-
-### Fixed
-- **The MCP server no longer crashes when cloud creds are set but the `cloud`
-  extra isn't installed.** `db.py` caught the bridge on a fresh install
-  (`ModuleNotFoundError: libsql_client`): it now warns and falls back to the local
-  engine instead of failing to import.
-- **Live Graph Console can be stopped with `q`/`Esc`** instead of `Ctrl+C` (which
-  tore down the whole `Configuration.bat`). It polls for the key during the refresh
-  interval, so quitting is instant.
-- **Bridge has Plan-B pre-flight checks.** It needs a runner for `mcp-proxy`
-  (uv/uvx/pipx) — if none is found it offers to install `uv`. And if Turso cloud
-  creds are set but `libsql-client` isn't installed, it offers to install it;
-  otherwise it serves the local engine — and, in that local path, launches Neuron
-  with the cloud creds suppressed (`NEURON_NO_DOTENV`), so the bridge starts even
-  against an OLDER installed `db.py` that imports `libsql_client` unconditionally.
-  (libsql is only for the cloud tier — the bridge itself never needs it.)
-- **Add-to-AI now leads with a clear "[DONE] added automatically" banner** so it's
-  obvious the config was written for you; the by-hand steps are marked reference-only.
-- **Heuristic extraction no longer promotes Italian action verbs / connectors to
-  graph nodes** (`usiamo`, `riduciamo`, `disegnare`, `adottiamo`, `passiamo`,
-  `via`, …). The IT+EN stoplist was extended with the common conjugations
-  (especially the "noi" `-iamo` form). Still 0-token and deterministic —
-  `Usiamo FastAPI con Redis, riduciamo la latenza` now extracts
-  `[fastapi, redis, latenza, …]` instead of the verbs.
-- **Self-links can no longer be created** (`react --analogy--> react`, including
-  case variants like `React`/`react`): a central guard in `Graph.add_link` rejects
-  `source == target` for *every* path (auto-link, store, semantic flash).
-
-### Planned
-- A curated-memory skill so MCP clients use Neuron correctly (quality up, tokens down).
-- `status` points to `/help`; a `help` tool documents every command in one line each.
-- Optional local-LLM (Ollama) validator layer, configurable from `Configuration.bat`.
+_Next up, after 4.0.0 ships:_
+- A curated-memory skill so MCP clients recognise Neuron as support and use it
+  the right way (quality up, tokens down).
+- An optional local-LLM (Ollama) validator layer on top of the 0-token heuristic,
+  configurable from `Configuration.bat`.
 
 ## [4.0.0] — unreleased (release target after a full fix + test pass)
 
 The first 4.x release: a stabilization and installer overhaul built on the 3.3.x
 codebase. MAJOR because default data locations and shipped behavior changed
-(see **Changed** / **Removed**).
+(see **Changed** / **Removed**). Everything below — installer, `help`, heuristic
+cleanup, bridge Plan-Bs, the crash fixes — is part of 4.0.0; there is no 4.0.x/4.1
+split until this ships.
 
 ### Added
 - **`Configuration.bat`** — one interactive hub for everything: install/update,
   "Add Neuron to your AI" (with a copy-paste tutorial per client — Claude
   Desktop/Code, Cursor, VS Code, OpenCode, Zed, ChatGPT/bridge), Bridge & Cloud
   Turso, tests, the live graph console, a clean uninstall, and a seed-DB guide.
+- **`help` tool** — lists every Neuron command with a one-line explanation, grouped
+  (per-turn loop / search / contexts / upkeep / data); `status` ends with a pointer
+  to it, so the human (not just the model) sees what each feature does.
 - **Complete prebuilt PyTurso wheel matrix (CPython 3.10–3.14)** in `vendor/` — every
   supported Python installs fully offline, no Rust/MSVC compiler needed.
 - **Embedding-model pre-warm** at the end of install (skippable, offline-safe) so the
@@ -91,6 +65,26 @@ codebase. MAJOR because default data locations and shipped behavior changed
   domain refinement was silently dead.
 - **New contexts crashed on first save** with `open: NotFound` — `turso.connect()`
   needs the parent directory to exist; it is now created for both engines.
+- **The MCP server no longer crashes when cloud creds are set but the `cloud` extra
+  isn't installed** — `db.py` warns and falls back to the local engine instead of a
+  `ModuleNotFoundError: libsql_client` at import (this killed the bridge preflight).
+- **Bridge Plan-B pre-flight** — it needs a runner for `mcp-proxy` (uv/uvx/pipx) and
+  offers to install `uv` if missing; if cloud creds are set but `libsql-client` isn't,
+  it offers to install it, otherwise serves the local engine — launching Neuron with
+  the cloud creds suppressed (`NEURON_NO_DOTENV`) so it starts even against an older
+  installed `db.py`. (libsql is only for the cloud tier; the bridge never needs it.)
+- **Heuristic extraction no longer promotes Italian action verbs / connectors to
+  graph nodes** (`usiamo`, `riduciamo`, `disegnare`, `adottiamo`, `passiamo`, `via`,
+  …) — the IT+EN stoplist was extended (esp. the "noi" `-iamo` form). 0-token,
+  deterministic: `Usiamo FastAPI con Redis, riduciamo la latenza` → `[fastapi, redis,
+  latenza, …]` instead of the verbs.
+- **Self-links can no longer be created** (`react --analogy--> react`, incl. case
+  variants like `React`/`react`) — a central guard in `Graph.add_link` rejects
+  `source == target` on every path (auto-link, store, semantic flash).
+- **Live Graph Console stops with `q`/`Esc`** instead of `Ctrl+C`, which used to tear
+  down the whole `Configuration.bat`.
+- **Add-to-AI leads with a clear "[DONE] added automatically" banner**; the by-hand
+  steps are marked reference-only.
 - **`check.ps1` crashed** when `rustup` wasn't installed, and wrongly flagged
   Rust/MSVC as failures when PyTurso already worked from a wheel — the toolchain is
   now reported as "not needed" and every external-tool call is guarded.
